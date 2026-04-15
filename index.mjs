@@ -52,7 +52,8 @@ app.post("/register", async (req, res) => {
   if (!username || !password) return res.status(400).send({ error: "Username and password required" });
   try {
     const hashed = await bcrypt.hash(password, 10);
-    await pool.query("INSERT INTO users (username, password) VALUES ($1, $2)", [username, hashed]);
+    const balance = Math.floor(Math.random() * 1201) + 300; // $300–$1500
+    await pool.query("INSERT INTO users (username, password, balance) VALUES ($1, $2, $3)", [username, hashed, balance]);
     res.status(201).send({ message: "User registered" });
   } catch (ex) {
     if (ex.code === "23505") return res.status(409).send({ error: "Username already exists" });
@@ -71,7 +72,26 @@ app.post("/login", async (req, res) => {
     return res.status(401).send({ error: "Invalid credentials" });
   }
   const token = jwt.sign({ id: user.id, username: safeUsername }, JWT_SECRET, { expiresIn: "1d" });
-  res.send({ token });
+  res.send({ token, balance: user.balance });
+});
+
+// Coupons
+const COUPONS = {
+  SNOR99:  100,
+  CHAI50:  50,
+  VIP500:  500,
+};
+const usedCoupons = new Map(); // "userId:code" -> true
+
+app.post("/coupon", authMiddleware, async (req, res) => {
+  const code = String(req.body.code || "").toUpperCase().trim();
+  const bonus = COUPONS[code];
+  if (!bonus) return res.status(400).send({ error: "Invalid coupon code" });
+  const key = `${req.user.id}:${code}`;
+  if (usedCoupons.has(key)) return res.status(409).send({ error: "Coupon already used" });
+  usedCoupons.set(key, true);
+  const result = await pool.query("UPDATE users SET balance = balance + $1 WHERE id = $2 RETURNING balance", [bonus, req.user.id]);
+  res.send({ message: `+$${bonus} added!`, newBalance: result.rows[0].balance });
 });
 
 // Get all seats
@@ -88,22 +108,38 @@ app.put("/:id", authMiddleware, async (req, res) => {
     const name = String(req.user.username).replace(/[<>&"'/]/g, "");
     const conn = await pool.connect();
     await conn.query("BEGIN");
-    const result = await conn.query(
+
+    // Lock seat
+    const seatResult = await conn.query(
       "SELECT * FROM seats WHERE id = $1 AND isbooked = 0 FOR UPDATE",
       [id]
     );
-    if (result.rowCount === 0) {
+    if (seatResult.rowCount === 0) {
       await conn.query("ROLLBACK");
       conn.release();
       return res.status(409).send({ error: "Seat already booked" });
     }
-    const updateResult = await conn.query(
-      "UPDATE seats SET isbooked = 1, name = $2 WHERE id = $1",
-      [id, name]
-    );
+
+    const seat = seatResult.rows[0];
+    const userResult = await conn.query("SELECT balance, bookings FROM users WHERE id = $1 FOR UPDATE", [req.user.id]);
+    const user = userResult.rows[0];
+
+    // Allow booking if first seat (bookings === 0) even if balance is low
+    if (user.bookings > 0 && user.balance < seat.price) {
+      await conn.query("ROLLBACK");
+      conn.release();
+      return res.status(402).send({ error: `Insufficient balance. Need $${seat.price}, have $${user.balance}` });
+    }
+
+    const deduct = Math.min(seat.price, user.balance); // for first seat, deduct what they have (or full price)
+    const newBalance = user.balance - seat.price; // may go negative only on first booking
+
+    await conn.query("UPDATE seats SET isbooked = 1, name = $2 WHERE id = $1", [id, name]);
+    await conn.query("UPDATE users SET balance = $1, bookings = bookings + 1 WHERE id = $2", [Math.max(0, newBalance), req.user.id]);
+
     await conn.query("COMMIT");
     conn.release();
-    res.json({ message: `Seat ${id} booked for ${name}` });
+    res.json({ message: `Seat ${id} booked for ${name}`, newBalance: Math.max(0, newBalance) });
   } catch (ex) {
     console.log(ex);
     res.status(500).send({ error: "Booking failed" });
