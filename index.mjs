@@ -14,14 +14,8 @@ const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error("JWT_SECRET is not set in environment");
 
 const pool = new pg.Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  connectionString: process.env.DATABASE_URL,
   max: 20,
-  connectionTimeoutMillis: 0,
-  idleTimeoutMillis: 0,
 });
 
 await pool.query(`
