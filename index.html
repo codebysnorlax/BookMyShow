@@ -12,6 +12,19 @@
   </head>
   <body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
 
+    <!-- Confirm Modal -->
+    <div id="confirmModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl p-6 w-full max-w-xs text-center">
+        <div class="text-3xl mb-3">🎟️</div>
+        <h3 class="text-lg font-bold text-white mb-1">Confirm Booking</h3>
+        <p class="text-slate-400 text-sm mb-5">Are you sure you want to book <span id="confirmSeatLabel" class="text-emerald-400 font-bold"></span>?</p>
+        <div class="flex gap-3">
+          <button onclick="closeConfirm(false)" class="flex-1 py-2 rounded-xl border border-slate-600 text-slate-300 hover:bg-slate-700 text-sm font-semibold transition-all">Cancel</button>
+          <button onclick="closeConfirm(true)" class="flex-1 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-semibold transition-all active:scale-95">Book It</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Auth Modal -->
     <div id="authModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
       <div class="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl p-6 w-full max-w-xs">
@@ -76,6 +89,18 @@
 
     <script>
       let currentTab = "login";
+      let confirmResolve = null;
+
+      function confirmBooking(seatId) {
+        document.getElementById("confirmSeatLabel").textContent = `Seat ${seatId}`;
+        document.getElementById("confirmModal").classList.remove("hidden");
+        return new Promise(resolve => { confirmResolve = resolve; });
+      }
+
+      function closeConfirm(result) {
+        document.getElementById("confirmModal").classList.add("hidden");
+        if (confirmResolve) { confirmResolve(result); confirmResolve = null; }
+      }
 
       function switchTab(tab) {
         currentTab = tab;
@@ -154,8 +179,10 @@
           td.addEventListener("click", async function (e) {
             const currentTd = e.currentTarget;
             if (currentTd.classList.contains("cursor-not-allowed")) return;
+            const id = j[i].id;
+            const confirmed = await confirmBooking(id);
+            if (!confirmed) return;
             try {
-              const id = j[i].id;
               const token = localStorage.getItem("token");
               const username = localStorage.getItem("username");
               const res = await fetch(`/${id}`, { method: "PUT", headers: { Authorization: `Bearer ${token}` } });
