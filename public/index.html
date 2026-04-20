@@ -46,7 +46,7 @@
       <div class="flex items-center gap-2">
         <span id="userLabel" class="text-emerald-400 text-xs sm:text-sm font-semibold"></span>
         <span id="balanceLabel" class="text-yellow-400 text-xs sm:text-sm font-semibold hidden"></span>
-        <button onclick="if(confirm('Are you sure you want to logout?')) logout()" id="logoutBtn" class="hidden text-xs text-slate-400 hover:text-rose-400 border border-slate-700 hover:border-rose-500 px-3 py-1 rounded-full transition-all">Logout</button>
+        <button onclick="logout()" id="logoutBtn" class="hidden text-xs text-slate-400 hover:text-rose-400 border border-slate-700 hover:border-rose-500 px-3 py-1 rounded-full transition-all">Logout</button>
       </div>
     </nav>
 
@@ -103,7 +103,35 @@
     <script>
       let currentTab = "login";
       let confirmResolve = null;
+      let currentUser = null; // { id, username, balance }
+      let csrfToken = null;
 
+      async function getCsrfToken() {
+        if (csrfToken) return csrfToken;
+        const res = await fetch("/csrf-token", { credentials: "include" });
+        const data = await res.json();
+        csrfToken = data.csrfToken;
+        return csrfToken;
+      }
+
+      function mutateHeaders() {
+        return { "Content-Type": "application/json", "x-csrf-token": csrfToken };
+      }
+
+      // ── Session restore on page load ──────────────────────────────────────
+      (async () => {
+        await getCsrfToken();
+        const res = await fetch("/auth/me", { credentials: "include" });
+        if (res.ok) {
+          currentUser = await res.json();
+          document.getElementById("authModal").classList.add("hidden");
+          setUser(currentUser.username, currentUser.balance);
+          run();
+        }
+        // 401 → stay on auth modal (default state)
+      })();
+
+      // ── Confirm modal ─────────────────────────────────────────────────────
       function confirmBooking(seatId, price) {
         document.getElementById("confirmSeatLabel").textContent = `Seat ${seatId} — $${price}`;
         document.getElementById("confirmModal").classList.remove("hidden");
@@ -115,6 +143,7 @@
         if (confirmResolve) { confirmResolve(result); confirmResolve = null; }
       }
 
+      // ── Auth modal ────────────────────────────────────────────────────────
       function switchTab(tab) {
         currentTab = tab;
         const isLogin = tab === "login";
@@ -127,36 +156,46 @@
       async function submitAuth() {
         const username = document.getElementById("authUsername").value.trim();
         const password = document.getElementById("authPassword").value.trim();
-        if (!username || !password) { showError("Please fill in all fields"); return; }
-        const res = await fetch(currentTab === "login" ? "/login" : "/register", {
+        if (!username || !password) { showAuthError("Please fill in all fields"); return; }
+
+        const endpoint = currentTab === "login" ? "/auth/login" : "/auth/register";
+        const res = await fetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: mutateHeaders(),
+          credentials: "include",
           body: JSON.stringify({ username, password }),
         });
         const data = await res.json();
-        if (!res.ok) { showError(data.error || "Something went wrong"); return; }
-        if (currentTab === "register") { showError("Registered! Please login."); switchTab("login"); return; }
-        localStorage.setItem("token", data.token);
-        localStorage.setItem("username", username);
-        localStorage.setItem("balance", data.balance);
+        if (!res.ok) { showAuthError(data.error || "Something went wrong"); return; }
+
+        if (currentTab === "register") {
+          showAuthError("Registered! Please login.");
+          switchTab("login");
+          return;
+        }
+
+        // Login success — cookie is set by server, fetch profile
+        currentUser = { username: data.username, balance: data.balance };
         document.getElementById("authModal").classList.add("hidden");
-        setUser(username, data.balance);
+        setUser(data.username, data.balance);
         run();
       }
 
-      function showError(msg) {
+      function showAuthError(msg) {
         const el = document.getElementById("authError");
         el.textContent = msg;
         el.classList.remove("hidden");
       }
 
+      // ── Coupon ────────────────────────────────────────────────────────────
       async function applyCoupon() {
         const code = document.getElementById("couponInput").value.trim();
         const msg = document.getElementById("couponMsg");
         if (!code) return;
         const res = await fetch("/coupon", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+          headers: mutateHeaders(),
+          credentials: "include",
           body: JSON.stringify({ code }),
         });
         const data = await res.json();
@@ -166,12 +205,13 @@
         } else {
           msg.textContent = data.message;
           msg.className = "text-xs font-semibold text-emerald-400";
-          localStorage.setItem("balance", data.newBalance);
+          currentUser.balance = data.newBalance;
           document.getElementById("balanceLabel").textContent = `💰 $${data.newBalance}`;
           document.getElementById("couponInput").value = "";
         }
       }
 
+      // ── UI helpers ────────────────────────────────────────────────────────
       function setUser(username, balance) {
         document.getElementById("userLabel").textContent = `👤 ${username}`;
         document.getElementById("logoutBtn").classList.remove("hidden");
@@ -182,10 +222,10 @@
         }
       }
 
-      function logout() {
-        localStorage.removeItem("token");
-        localStorage.removeItem("username");
-        localStorage.removeItem("balance");
+      async function logout() {
+        await fetch("/auth/logout", { method: "POST", headers: mutateHeaders(), credentials: "include" });
+        currentUser = null;
+        csrfToken = null;
         document.getElementById("tbl").innerHTML = "";
         document.getElementById("userLabel").textContent = "";
         document.getElementById("balanceLabel").textContent = "";
@@ -200,24 +240,23 @@
         document.getElementById("authModal").classList.remove("hidden");
       }
 
+      // ── Seat grid ─────────────────────────────────────────────────────────
       async function run() {
         const tbl = document.getElementById("tbl");
         tbl.innerHTML = "";
-        const res = await fetch("/seats");
-        const j = (await res.json()).sort((a, b) => a.id - b.id);
+        const res = await fetch("/seats", { credentials: "include" });
+        const seats = (await res.json()).sort((a, b) => a.id - b.id);
         let tr;
-        for (let i = 0; i < j.length; i++) {
+        for (let i = 0; i < seats.length; i++) {
           if (i % 5 === 0) { tr = document.createElement("tr"); tbl.appendChild(tr); }
-          const seat = j[i];
+          const seat = seats[i];
           const isSofa = seat.type === "sofa";
           const sofaPos = isSofa ? (i % 5) : -1;
-          // left pair: 0,1 | solo: 2 | right pair: 3,4
           const sofaRound = sofaPos === 0 ? "rounded-l-2xl rounded-r-sm" :
                             sofaPos === 1 ? "rounded-r-2xl rounded-l-sm" :
                             sofaPos === 2 ? "rounded-2xl" :
                             sofaPos === 3 ? "rounded-l-2xl rounded-r-sm" :
                             sofaPos === 4 ? "rounded-r-2xl rounded-l-sm" : "rounded-xl";
-          // no gap between paired seats
           const tdPad = (sofaPos === 0 || sofaPos === 3) ? "pr-[1px]" :
                         (sofaPos === 1 || sofaPos === 4) ? "pl-[1px]" : "";
           const td = document.createElement("td");
@@ -234,7 +273,7 @@
             el.innerHTML = `
               <span>${isSofa ? "🛋️" : seat.id}</span>
               <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-900 border border-slate-700 text-xs text-slate-300 rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-nowrap shadow-2xl z-50 pointer-events-none">
-                Booked by: <span class="font-bold text-white ml-1">${seat.name}</span>
+                Booked by: <span class="font-bold text-white ml-1">${seat.booked_by ?? "someone"}</span>
                 <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-[1px] border-[5px] border-transparent border-t-slate-700"></div>
               </div>`;
           } else if (isSofa) {
@@ -247,42 +286,34 @@
 
           el.addEventListener("click", async function () {
             if (el.classList.contains("cursor-not-allowed")) return;
-            const id = seat.id;
-            const confirmed = await confirmBooking(id, seat.price);
+            const confirmed = await confirmBooking(seat.id, seat.price);
             if (!confirmed) return;
-            try {
-              const token = localStorage.getItem("token");
-              const username = localStorage.getItem("username");
-              const res = await fetch(`/${id}`, { method: "PUT", headers: { Authorization: `Bearer ${token}` } });
-              const data = await res.json();
-              if (data.error) {
-                alert(data.error);
-              } else {
-                localStorage.setItem("balance", data.newBalance);
-                document.getElementById("balanceLabel").textContent = `💰 $${data.newBalance}`;
-                el.className = `${base} ${isSofa ? "bg-purple-500/10 text-purple-400/50 border border-purple-500/20" : "bg-rose-500/10 text-rose-500/60 border border-rose-500/20"} cursor-not-allowed`;
-                el.innerHTML = `
-                  <span>${isSofa ? "🛋️" : id}</span>
-                  <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-900 border border-slate-700 text-xs text-slate-300 rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-nowrap shadow-2xl z-50 pointer-events-none">
-                    Booked by: <span class="font-bold text-white ml-1">${username}</span>
-                    <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-[1px] border-[5px] border-transparent border-t-slate-700"></div>
-                  </div>`;
-              }
-            } catch (ex) { alert("Error booking: " + ex); }
+            const res = await fetch(`/seats/${seat.id}`, {
+              method: "PUT",
+              headers: mutateHeaders(),
+              credentials: "include",
+            });              method: "PUT",
+              credentials: "include",
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              alert(data.error);
+            } else {
+              currentUser.balance = data.newBalance;
+              document.getElementById("balanceLabel").textContent = `💰 $${data.newBalance}`;
+              el.className = `${base} ${isSofa ? "bg-purple-500/10 text-purple-400/50 border border-purple-500/20" : "bg-rose-500/10 text-rose-500/60 border border-rose-500/20"} cursor-not-allowed`;
+              el.innerHTML = `
+                <span>${isSofa ? "🛋️" : seat.id}</span>
+                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-slate-900 border border-slate-700 text-xs text-slate-300 rounded-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-nowrap shadow-2xl z-50 pointer-events-none">
+                  Booked by: <span class="font-bold text-white ml-1">${currentUser.username}</span>
+                  <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-[1px] border-[5px] border-transparent border-t-slate-700"></div>
+                </div>`;
+            }
           });
 
           td.appendChild(el);
           tr.appendChild(td);
         }
-      }
-
-      const savedToken = localStorage.getItem("token");
-      const savedUser = localStorage.getItem("username");
-      const savedBalance = localStorage.getItem("balance");
-      if (savedToken && savedUser) {
-        document.getElementById("authModal").classList.add("hidden");
-        setUser(savedUser, savedBalance !== null ? Number(savedBalance) : undefined);
-        run();
       }
     </script>
   </body>

@@ -43,16 +43,16 @@ The `.env` file is already present with default values:
 
 ```
 PORT=8080
-JWT_SECRET=supersecret
+JWT_SECRET=<your-strong-secret>
 
 DB_HOST=localhost
 DB_PORT=5433
-DB_USER=postgres
-DB_PASSWORD=postgres
+DB_USER=<db-user>
+DB_PASSWORD=<db-password>
 DB_NAME=sql_book_my_show_db
 ```
 
-Change `JWT_SECRET` to something strong before deploying.
+Set all `<placeholder>` values in your actual `.env` file. Never commit real credentials to version control.
 
 ### 5. Start the server
 
@@ -72,7 +72,7 @@ Server runs at `http://localhost:8080`.
 POST /register
 Content-Type: application/json
 
-{ "username": "alice", "password": "pass123" }
+{ "username": "<username>", "password": "<password>" }
 ```
 
 Creates a new user. A random balance between $300 and $1500 is assigned automatically. Returns `201` on success.
@@ -85,7 +85,7 @@ Creates a new user. A random balance between $300 and $1500 is assigned automati
 POST /login
 Content-Type: application/json
 
-{ "username": "alice", "password": "pass123" }
+{ "username": "<username>", "password": "<password>" }
 ```
 
 Returns a JWT token and the user's current balance. Use this token in all protected requests.
@@ -188,7 +188,7 @@ UPDATE seats SET name = NULL, isbooked = 0;
 ```bash
 docker compose up
 
-docker exec -it chai_sql_db psql -U postgres -d sql_book_my_show_db
+docker exec -it chai_sql_db psql -U <DB_USER> -d <DB_NAME>
 
 ```
 ```sql
